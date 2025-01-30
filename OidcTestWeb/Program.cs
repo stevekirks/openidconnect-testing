@@ -19,7 +19,7 @@ var redirectUri = configuration["OpenIdConnect:RedirectUri"];
 var authorizationEndpoint = $"{authority}/oauth2/v1/authorize";
 var tokenEndpoint = $"{authority}/oauth2/v1/token";
 var userInfoEndpoint = $"{authority}/oauth2/v1/userinfo";
-var scopes = "openid profile email groups";
+var scopes = configuration["OpenIdConnect:Scopes"];
 
 var app = builder.Build();
 
@@ -183,7 +183,7 @@ async Task FetchAndDisplayUserInfo(string accessToken)
     {
         Console.WriteLine("\nNo groups claim found.");
     }
-};
+}
 
 // Run the web server
 app.Run();
