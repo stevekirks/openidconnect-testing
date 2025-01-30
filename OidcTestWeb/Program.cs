@@ -12,67 +12,157 @@ configuration
     .AddJsonFile("appsettings.json")
     .AddJsonFile("appsettings.Development.json", true);
 
-var oktaDomain = configuration["OpenIdConnect:Domain"];
+var authority = configuration["OpenIdConnect:Authority"];
 var clientId = configuration["OpenIdConnect:ClientId"];
 var clientSecret = configuration["OpenIdConnect:ClientSecret"];
 var redirectUri = configuration["OpenIdConnect:RedirectUri"];
-var authorizationEndpoint = $"{oktaDomain}/oauth2/v1/authorize";
-var tokenEndpoint = $"{oktaDomain}/oauth2/v1/token";
-var userInfoEndpoint = $"{oktaDomain}/oauth2/v1/userinfo";
+var authorizationEndpoint = $"{authority}/oauth2/v1/authorize";
+var tokenEndpoint = $"{authority}/oauth2/v1/token";
+var userInfoEndpoint = $"{authority}/oauth2/v1/userinfo";
+var scopes = "openid profile email groups";
 
 var app = builder.Build();
 
-// Step 1: Redirect user to Okta login
-app.MapGet("/", () =>
+// Root Page: Provides links to initiate login with both flows
+app.MapGet("/", async (HttpContext context) =>
 {
-    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope=openid%20profile%20email%20groups&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
+    await context.Response.WriteAsync(@"
+        <html>
+        <head>
+            <title>OIDC Flow Test</title>
+        </head>
+        <body>
+            <h1>Choose Authentication Flow</h1>
+            <ul>
+                <li><a href='/auth-code'>Login with Authorization Code Flow</a></li>
+                <li><a href='/implicit'>Login with Implicit Flow</a></li>
+            </ul>
+        </body>
+        </html>");
+});
+
+
+// Step 1A: Authorization Code Flow - Redirect user to Okta login
+app.MapGet("/auth-code", () =>
+{
+    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope={scopes}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
     Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
 
-    Console.WriteLine($"Authorization call: {authUrl}");
-
+    Console.WriteLine($"Authorization Code Flow call: {authUrl}");
     return "Opening browser for login...";
 });
 
-// Step 2: Handle the OAuth callback and exchange code for tokens
+// Step 1B: Implicit Flow - Redirect user to Okta login
+app.MapGet("/implicit", () =>
+{
+    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=id_token%20token&scope={scopes}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz&nonce=123456";
+    Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
+
+    Console.WriteLine($"Implicit Flow call: {authUrl}");
+    return "Opening browser for login...";
+});
+
+// Step 2: Handle the OAuth callback for both flows
 app.MapGet("/authorization-code/callback", async (HttpContext context) =>
 {
-    var code = context.Request.Query["code"];
-    Console.WriteLine($"Authorization Code: {code}");
+    var query = context.Request.Query;
+    string code = query["code"];   // Used in Authorization Code Flow
+    string error = query["error"]; // Check for errors
+
+    if (!string.IsNullOrEmpty(error))
+    {
+        Console.WriteLine($"Error in authentication: {error}");
+        return;
+    }
+
+    // If an Authorization Code is present, handle Authorization Code Flow
+    if (!string.IsNullOrEmpty(code))
+    {
+        Console.WriteLine($"Authorization Code: {code}");
+
+        using var httpClient = new HttpClient();
+        var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint);
+        tokenRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        tokenRequest.Content = new FormUrlEncodedContent(new[]
+        {
+            new KeyValuePair<string, string>("grant_type", "authorization_code"),
+            new KeyValuePair<string, string>("code", code),
+            new KeyValuePair<string, string>("redirect_uri", redirectUri),
+            new KeyValuePair<string, string>("client_id", clientId),
+            new KeyValuePair<string, string>("client_secret", clientSecret)
+        });
+
+        var tokenResponse = await httpClient.SendAsync(tokenRequest);
+        var tokenJson = await tokenResponse.Content.ReadAsStringAsync();
+        Console.WriteLine($"Token Response: {tokenJson}");
+
+        var tokenObj = JsonSerializer.Deserialize<JsonElement>(tokenJson);
+        string idToken = tokenObj.GetProperty("id_token").GetString();
+        string accessToken = tokenObj.GetProperty("access_token").GetString();
+
+        DecodeAndDisplayClaims(idToken, "ID Token");
+        await FetchAndDisplayUserInfo(accessToken);
+
+        // Respond to browser
+        await context.Response.WriteAsync("<html><body><h2>Login successful! See details of the claims in the console.<br/>You can close this window.</h2></body></html>");
+    }
+    else
+    {
+        // Step 3: If using Implicit Flow, extract tokens from the URL fragment (handled in JavaScript)
+        await context.Response.WriteAsync(@"
+            <html><body>
+            <script>
+                const hash = window.location.hash.substring(1);
+                const params = new URLSearchParams(hash);
+                const idToken = params.get('id_token');
+                const accessToken = params.get('access_token');
+                if (idToken) { 
+                    window.location.href = '/implicit-token?id_token=' + idToken + '&access_token=' + accessToken;
+                }
+            </script>
+            <h2>Processing tokens...</h2>
+            </body></html>");
+    }
+});
+
+// Step 4: Handle Implicit Flow token processing
+app.MapGet("/implicit-token", async (HttpContext context) =>
+{
+    var query = context.Request.Query;
+    string idToken = query["id_token"];
+    string accessToken = query["access_token"];
+
+    if (string.IsNullOrEmpty(idToken))
+    {
+        await context.Response.WriteAsync("<h2>Error: No ID Token received</h2>");
+        return;
+    }
+
+    DecodeAndDisplayClaims(idToken, "ID Token (Implicit Flow)");
+    await FetchAndDisplayUserInfo(accessToken);
 
     // Respond to browser
     await context.Response.WriteAsync("<html><body><h2>Login successful! See details of the claims in the console.<br/>You can close this window.</h2></body></html>");
 
-    // Step 3: Exchange the code for tokens (Access Token + ID Token)
-    using var httpClient = new HttpClient();
-    var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint);
-    tokenRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-    tokenRequest.Content = new FormUrlEncodedContent(new[]
-    {
-        new KeyValuePair<string, string>("grant_type", "authorization_code"),
-        new KeyValuePair<string, string>("code", code),
-        new KeyValuePair<string, string>("redirect_uri", redirectUri),
-        new KeyValuePair<string, string>("client_id", clientId),
-        new KeyValuePair<string, string>("client_secret", clientSecret)
-    });
+});
 
-    var tokenResponse = await httpClient.SendAsync(tokenRequest);
-    var tokenJson = await tokenResponse.Content.ReadAsStringAsync();
-    Console.WriteLine($"Token Response: {tokenJson}");
-
-    // Step 4: Decode the ID Token and extract claims
-    var tokenObj = JsonSerializer.Deserialize<JsonElement>(tokenJson);
-    var idToken = tokenObj.GetProperty("id_token").GetString();
+// Function to Decode and Display JWT Claims
+void DecodeAndDisplayClaims(string token, string title)
+{
     var handler = new JwtSecurityTokenHandler();
-    var jwtToken = handler.ReadJwtToken(idToken);
+    var jwtToken = handler.ReadJwtToken(token);
 
-    Console.WriteLine("\nID Token Claims:");
+    Console.WriteLine($"\n{title} Claims:");
     foreach (var claim in jwtToken.Claims)
     {
         Console.WriteLine($"{claim.Type}: {claim.Value}");
     }
+}
 
-    // Step 5: Fetch the UserInfo (includes groups) using the Access Token
-    var accessToken = tokenObj.GetProperty("access_token").GetString();
+// Function to Fetch UserInfo using Access Token
+async Task FetchAndDisplayUserInfo(string accessToken)
+{
+    using var httpClient = new HttpClient();
     var userInfoRequest = new HttpRequestMessage(HttpMethod.Get, userInfoEndpoint);
     userInfoRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
@@ -80,7 +170,6 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
     var userInfoJson = await userInfoResponse.Content.ReadAsStringAsync();
     Console.WriteLine($"\nUserInfo Response: {userInfoJson}");
 
-    // Step 6: Parse and display the groups claim from UserInfo
     var userInfo = JsonSerializer.Deserialize<JsonElement>(userInfoJson);
     if (userInfo.TryGetProperty("groups", out var groups))
     {
@@ -94,7 +183,7 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
     {
         Console.WriteLine("\nNo groups claim found.");
     }
-});
+};
 
 // Run the web server
 app.Run();
