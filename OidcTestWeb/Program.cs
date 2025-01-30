@@ -12,14 +12,14 @@ configuration
     .AddJsonFile("appsettings.json")
     .AddJsonFile("appsettings.Development.json", true);
 
-var authority = configuration["OpenIdConnect:Authority"];
-var clientId = configuration["OpenIdConnect:ClientId"];
-var clientSecret = configuration["OpenIdConnect:ClientSecret"];
-var redirectUri = configuration["OpenIdConnect:RedirectUri"];
+var authority = configuration["OpenIdConnect:Authority"]!;
+var clientId = configuration["OpenIdConnect:ClientId"]!;
+var clientSecret = configuration["OpenIdConnect:ClientSecret"]!;
+var redirectUri = configuration["OpenIdConnect:RedirectUri"]!;
+var scopes = configuration["OpenIdConnect:Scopes"]!;
 var authorizationEndpoint = $"{authority}/oauth2/v1/authorize";
 var tokenEndpoint = $"{authority}/oauth2/v1/token";
 var userInfoEndpoint = $"{authority}/oauth2/v1/userinfo";
-var scopes = configuration["OpenIdConnect:Scopes"];
 
 var app = builder.Build();
 
@@ -45,7 +45,7 @@ app.MapGet("/", async (HttpContext context) =>
 // Step 1A: Authorization Code Flow - Redirect user to Okta login
 app.MapGet("/auth-code", () =>
 {
-    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope={scopes}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
+    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
     Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
 
     Console.WriteLine($"Authorization Code Flow call: {authUrl}");
@@ -55,7 +55,7 @@ app.MapGet("/auth-code", () =>
 // Step 1B: Implicit Flow - Redirect user to Okta login
 app.MapGet("/implicit", () =>
 {
-    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=id_token%20token&scope={scopes}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz&nonce=123456";
+    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=id_token%20token&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz&nonce=123456";
     Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
 
     Console.WriteLine($"Implicit Flow call: {authUrl}");
@@ -81,6 +81,7 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
         Console.WriteLine($"Authorization Code: {code}");
 
         using var httpClient = new HttpClient();
+        Console.WriteLine($"Making call to token endpoint: {tokenEndpoint}");
         var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint);
         tokenRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         tokenRequest.Content = new FormUrlEncodedContent(new[]
@@ -162,6 +163,7 @@ void DecodeAndDisplayClaims(string token, string title)
 // Function to Fetch UserInfo using Access Token
 async Task FetchAndDisplayUserInfo(string accessToken)
 {
+    Console.WriteLine($"Making call to userInfo endpoint: {userInfoEndpoint}");
     using var httpClient = new HttpClient();
     var userInfoRequest = new HttpRequestMessage(HttpMethod.Get, userInfoEndpoint);
     userInfoRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
