@@ -3,10 +3,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Net.Http.Headers;
 using System.Text.Json;
 
-// Build the minimal web server
 var builder = WebApplication.CreateBuilder(args);
 
-// Load configuration from appsettings.json
 var configuration = builder.Configuration;
 configuration
     .AddJsonFile("appsettings.json")
@@ -35,7 +33,7 @@ app.MapGet("/", async (HttpContext context) =>
             <h1>Choose Authentication Flow</h1>
             <ul>
                 <li><a href='/auth-code'>Login with Authorization Code Flow</a></li>
-                <li><a href='/implicit'>Login with Implicit Flow</a></li>
+                <li><a href='/implicit'>Login with Implicit Flow (not recommended)</a></li>
             </ul>
         </body>
         </html>");
@@ -45,7 +43,7 @@ app.MapGet("/", async (HttpContext context) =>
 // Step 1A: Authorization Code Flow - Redirect user to Okta login
 app.MapGet("/auth-code", () =>
 {
-    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
+    var authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=code&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
     Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
 
     Console.WriteLine($"Authorization Code Flow call: {authUrl}");
@@ -55,19 +53,19 @@ app.MapGet("/auth-code", () =>
 // Step 1B: Implicit Flow - Redirect user to Okta login
 app.MapGet("/implicit", () =>
 {
-    string authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=id_token%20token&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz&nonce=123456";
+    var authUrl = $"{authorizationEndpoint}?client_id={clientId}&response_type=id_token%20token&scope={Uri.EscapeDataString(scopes)}&redirect_uri={Uri.EscapeDataString(redirectUri)}&state=xyz";
     Process.Start(new ProcessStartInfo { FileName = authUrl, UseShellExecute = true });
-
+    
     Console.WriteLine($"Implicit Flow call: {authUrl}");
     return "Opening browser for login...";
 });
 
-// Step 2: Handle the OAuth callback for both flows
+// Step 2: Handle the OAuth callback for flows
 app.MapGet("/authorization-code/callback", async (HttpContext context) =>
 {
     var query = context.Request.Query;
-    string code = query["code"];   // Used in Authorization Code Flow
-    string error = query["error"]; // Check for errors
+    string code = query["code"];
+    string error = query["error"];
 
     if (!string.IsNullOrEmpty(error))
     {
@@ -75,13 +73,11 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
         return;
     }
 
-    // If an Authorization Code is present, handle Authorization Code Flow
     if (!string.IsNullOrEmpty(code))
     {
         Console.WriteLine($"Authorization Code: {code}");
 
         using var httpClient = new HttpClient();
-        Console.WriteLine($"Making call to token endpoint: {tokenEndpoint}");
         var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint);
         tokenRequest.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         tokenRequest.Content = new FormUrlEncodedContent(new[]
@@ -93,13 +89,14 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
             new KeyValuePair<string, string>("client_secret", clientSecret)
         });
 
+        Console.WriteLine($"Making call to token endpoint: {tokenEndpoint}");
         var tokenResponse = await httpClient.SendAsync(tokenRequest);
         var tokenJson = await tokenResponse.Content.ReadAsStringAsync();
         Console.WriteLine($"Token Response: {tokenJson}");
 
         var tokenObj = JsonSerializer.Deserialize<JsonElement>(tokenJson);
-        string idToken = tokenObj.GetProperty("id_token").GetString();
-        string accessToken = tokenObj.GetProperty("access_token").GetString();
+        var idToken = tokenObj.GetProperty("id_token").GetString();
+        var accessToken = tokenObj.GetProperty("access_token").GetString();
 
         DecodeAndDisplayClaims(idToken, "ID Token");
         await FetchAndDisplayUserInfo(accessToken);
@@ -116,7 +113,7 @@ app.MapGet("/authorization-code/callback", async (HttpContext context) =>
                 const hash = window.location.hash.substring(1);
                 const params = new URLSearchParams(hash);
                 const idToken = params.get('id_token');
-                const accessToken = params.get('access_token');
+                const accessToken = params.get('access_token') ?? '';
                 if (idToken) { 
                     window.location.href = '/implicit-token?id_token=' + idToken + '&access_token=' + accessToken;
                 }
@@ -140,14 +137,20 @@ app.MapGet("/implicit-token", async (HttpContext context) =>
     }
 
     DecodeAndDisplayClaims(idToken, "ID Token (Implicit Flow)");
-    await FetchAndDisplayUserInfo(accessToken);
+    if (!string.IsNullOrEmpty(accessToken))
+    {
+        await FetchAndDisplayUserInfo(accessToken);
+    }
+    else
+    {
+        Console.WriteLine("No access token so wont fetch from UserInfo endpoint");
+    }
 
     // Respond to browser
     await context.Response.WriteAsync("<html><body><h2>Login successful! See details of the claims in the console.<br/>You can close this window.</h2></body></html>");
 
 });
 
-// Function to Decode and Display JWT Claims
 void DecodeAndDisplayClaims(string token, string title)
 {
     var handler = new JwtSecurityTokenHandler();
@@ -160,7 +163,6 @@ void DecodeAndDisplayClaims(string token, string title)
     }
 }
 
-// Function to Fetch UserInfo using Access Token
 async Task FetchAndDisplayUserInfo(string accessToken)
 {
     Console.WriteLine($"Making call to userInfo endpoint: {userInfoEndpoint}");
@@ -187,5 +189,4 @@ async Task FetchAndDisplayUserInfo(string accessToken)
     }
 }
 
-// Run the web server
 app.Run();
